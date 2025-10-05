@@ -1,0 +1,318 @@
+from selenium import webdriver
+from selenium.webdriver.ie.service import Service
+from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as ec
+from datetime import datetime as dt
+
+from urllib3.exceptions import MaxRetryError
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+
+EMAIL = "vincent.2998@yahoo.com"
+PASSWORD = "61612518"
+
+class DataExtraction:
+
+    def __init__(self):
+        self.chrome_options = webdriver.ChromeOptions()
+        self.chrome_options.add_experimental_option("detach", True)
+        # self.chrome_options.add_argument('--headless')
+        ## Kept getting a time-out error for when trying to run a new URL in webdriver, so I added this ChromeDriverManager Clas:
+        self.service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(options=self.chrome_options, service=self.service)
+        self.wait = WebDriverWait(self.driver, 5)
+
+
+    def get_website(self, url):
+
+        try:
+            self.driver.get(url)
+            time.sleep(2)
+        except MaxRetryError:
+            self.driver.quit()
+            self.driver.get(url)
+            time.sleep(2)
+
+        # Input Login Details:
+        email = self.wait.until(ec.presence_of_element_located((By.NAME, "vendor_email")))
+        email.send_keys(EMAIL)
+        password = self.wait.until(ec.presence_of_element_located((By.NAME, "vendor_password")))
+        password.send_keys(PASSWORD)
+
+        # Enter pressing:
+        submit_login = self.driver.find_element(By.NAME, "Submit")
+        submit_login.click()
+
+        ## After login, enter sales and generate days sales:
+        nav_to_sales = self.wait.until(ec.presence_of_element_located((By.XPATH, "/html/body/table[1]/tbody/tr[2]/td/a[1]")))
+        nav_to_sales.click()
+
+
+
+
+    def open_shops(self, shop_num):
+
+        shop_dd = self.driver.find_element(By.XPATH, "/html/body/table[2]/tbody/tr[6]/td[3]/select")
+        shop_dd.click()
+        shop_selector = self.driver.find_element(By.XPATH, f"/html/body/table[2]/tbody/tr[6]/td[3]/select/option[{shop_num}]")
+        shop_selector.click()
+
+        # Submit request:
+        submit_year_data = self.driver.find_element(By.NAME, "submit")
+        submit_year_data.click()
+        return self.scrape_data()
+
+    def scrape_data(self):
+        ## Now time to scrape the data:
+        all_data = []
+
+        data_length = len(self.driver.find_elements(By.XPATH, value=f"/html/body/table[2]/tbody/tr[9]/td/table/tbody/tr"))
+
+        for num in range(2, data_length):
+            tr_data = self.driver.find_elements(By.XPATH, value=f"/html/body/table[2]/tbody/tr[9]/td/table/tbody/tr[{num}]/td")
+            td_data_list = [item.text for item in tr_data]
+            all_data.append(td_data_list)
+        print(all_data)
+        headings = self.driver.find_elements(By.XPATH, value=f"/html/body/table[2]/tbody/tr[9]/td/table/tbody/tr[2]/td")
+        headings_list = [item.text.split(" ")[1] for item in headings]
+
+        ## Add data to workable dictionary:
+        data = {f"{all_data.index(i)}": {head: i[headings_list.index(head)] for head in headings_list} for i in all_data}
+        print(data)
+
+        ## Formate date from MM/DD/YYYY to DD/MM/YYYY:
+        for item in range(0, len(all_data)):
+            date_strip = dt.strptime(data[f"{item}"]["Date"].split(" ")[0], "%m/%d/%Y")
+            formated_date = date_strip.strftime("%d/%m/%Y")
+            data[f"{item}"]["Date"] = formated_date
+
+        return data
+
+    def log_out(self):
+        log_out = self.driver.find_element(By.XPATH, value="/html/body/table[1]/tbody/tr[2]/td/a[6]")
+        log_out.click()
+        self.driver.quit()
+import pandas as pd
+from datetime import datetime as dt
+import os
+from openpyxl import load_workbook
+from DataExtract import DataExtraction
+
+FILE_PATH = "Sales_Data.xlsx"
+
+class ExcelCreation:
+
+    def __init__(self):
+        pass
+
+    def create_excelsheet(self, data, shop_name):
+        # EXEPTION CATCH - Keep getting a "data" not defined error:
+        try:
+            formated_data = pd.DataFrame(data)
+            horizontal_form = formated_data.T
+        except NameError:
+            print("A 'NameError' has occurred, trying again...")
+            formated_data = pd.DataFrame(data)
+            horizontal_form = formated_data.T
+
+            # ## Selecting the shop names for saving the data:
+            # shop_name = SHOPS[loops][shops - 1]
+
+            ## Sort data into a CSV file (excel):
+            formated_data = pd.DataFrame(horizontal_form)
+
+            ## Check if file exists:
+            if os.path.exists(FILE_PATH):
+                book = load_workbook(filename=FILE_PATH)
+
+                ##Check if sheets exist:
+                if shop_name in book.sheetnames:
+                    ## If the sheet already exists, then you will load the sheet data to locate the last row containing data:
+                    existing_data = pd.read_excel(FILE_PATH, sheet_name=shop_name)
+                    start_column = len(existing_data.columns) + 2
+                else:
+                    ## Is the sheet doesn't exist we will make the last row equal to '0':
+                    start_column = 0
+
+                with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode='a', if_sheet_exists="overlay") as writer:
+                    formated_data.to_excel(writer, sheet_name=f"{shop_name}", startcol=start_column, index=False,
+                                           header=True)
+
+            ## If the file_path doesn't exist:
+            else:
+                with pd.ExcelWriter(FILE_PATH, engine="openpyxl") as writer:
+                    formated_data.to_excel(writer, sheet_name=f"{shop_name}", index=False)
+
+            print(f"Completed! Your sheet '{shop_name}' has been updated!")
+
+
+
+
+
+
+from DataExtract import DataExtraction
+from ExcelFormatting import ExcelCreation
+import smtplib
+
+DETAILS = ["BloomBox", "FamBox", "BoxMarket", "MeowBox", "UniqueCube", "OhMyBox", "GiantBox"]
+SHOPS = [
+    ["1"],
+    ["1"],
+    ["2", "6", "7"],
+    ["4", "5", "6", "7"],
+    ["2", "3"],
+    ["1"]
+    ]
+SHOP_NAMES = [
+    ["First City"],
+    ["Jingrui Pl"],
+    ["New Beijing SM", "Tai Po Plaza", "Huijing Plaza"],
+    ["New Beijing ShopM", "Haudu SM", "Jingrui Plaza", "Kwai Chung Plaza"],
+    ["Tseung Kwan O", "Kui Fang"],
+    ["Saiming SM"]
+]
+URL_LIST = [
+    "https://www.one-pos.com/thefambox/box_login.asp",      #ONE SHOP
+    "https://www.one-pos.com/boxmarket/box_login.asp",      #ONE SHOP
+    "https://www.one-pos.com/meowmeowbox/box_login.asp",    #2ND, 6TH, AND 7TH SHOP
+    "https://www.one-pos.com/uniquecube/box_login.asp",     #4TH, 5TH, 6TH, AND 7TH SHOP
+    "https://www.one-pos.com/lomb/box_login.asp",           #2ND AND 3RD SHOP
+    "https://www.one-pos.com/thegiantbox/box_login.asp",    #ONE SHOP
+]
+
+EMAIL = "pyttesting1@gmail.com"
+PASSWORD = "qgeddahmowmjkqjn"
+
+# FILE_PATH = input("what is the name of the file you would like to work with: ") + ".xlsx"
+# BLOOMBOX_URL = "https://www.one-pos.com/bloombox/box_login.asp"             #ONE SHOP
+
+get_data = DataExtraction()
+excel = ExcelCreation()
+connection = smtplib.SMTP_SSL('smtp.gmail.com')
+# connection.starttls()
+
+for url in URL_LIST:
+    print(url)
+    get_data.get_website(url)
+    for i in SHOPS[URL_LIST.index(url)]:
+        the_data = get_data.open_shops(i)
+        # current_url_index = SHOPS[URL_LIST.index(url)]
+        if len(the_data) == 0:
+            print(f"The shop {SHOP_NAMES[URL_LIST.index(url)][SHOPS[URL_LIST.index(url)].index(i)]} had no sales today.")
+            # connection.login(EMAIL, PASSWORD)
+            # connection.sendmail(from_addr=EMAIL, to_addrs="zanderhenning@gmail.com",
+            #                     msg=f"Subject: Testing Vincent APP\n\nThe data file was empty, "
+            #                         f"shop: {SHOP_NAMES[URL_LIST.index(url)].index(i)} was skipped.")
+        else:
+            excel.create_excelsheet(the_data, SHOP_NAMES[URL_LIST.index(url)].index(i))
+    get_data.log_out()
+
+# chrome_options = webdriver.ChromeOptions()
+# chrome_options.add_experimental_option("detach", True)
+# driver = webdriver.Chrome(options=chrome_options)
+# driver.get(BLOOMBOX_URL)
+
+# loops = 0
+
+# while loops < 5:
+    # wait = WebDriverWait(driver, 5)
+    #
+    # # Input Login Details:
+    # email = wait.until(EC.presence_of_element_located((By.NAME, "vendor_email")))
+    # email.send_keys(DETAILS[loops])
+    # password = wait.until(EC.presence_of_element_located((By.NAME, "vendor_password")))
+    # password.send_keys(DETAILS[loops])
+    #
+    # # Enter pressing:
+    # submit_login = driver.find_element(By.NAME, "Submit")
+    # submit_login.click()
+    #
+    # ## After login, enter sales and generate days sales:
+    # nav_to_sales = wait.until(EC.presence_of_element_located((By.XPATH, "/html/body/table[1]/tbody/tr[2]/td/a[1]")))
+    # nav_to_sales.click()
+
+    # ## Shop dropdown selection:
+    # shop_dd = driver.find_elements(By.XPATH, "/html/body/table[2]/tbody/tr[6]/td[3]/select/option")
+    # num_shops = len(shop_dd)
+    #
+    #
+    # # Now we can loop through the shop list for len(num_shops) and get each data:
+    # curr_shop_num = 1
+    # for shops in range(1, num_shops + 1):
+    #     shop_dd = driver.find_element(By.XPATH, "/html/body/table[2]/tbody/tr[6]/td[3]/select")
+    #     shop_dd.click()
+    #     shop_selector = driver.find_element(By.XPATH, f"/html/body/table[2]/tbody/tr[6]/td[3]/select/option[{curr_shop_num}]")
+    #     shop_selector.click()
+    #     # Open dropdown:
+    #     dropdown_year = driver.find_element(By.NAME, "sales_YYYY1")
+    #     dropdown_year.click()
+    #
+    #     ## As the User for a choice of year:
+    #     user_year_choice = str(input("What year would you like to look for: "))
+    #     if user_year_choice == "2024":
+    #         option = 3
+    #     elif user_year_choice == "2025":
+    #         option = 2
+    #
+    #     # Select year:
+    #     year = driver.find_element(By.XPATH, value=f"/html/body/table[2]/tbody/tr[7]/td[3]/select[1]/option[{option}]")
+    #     year.click()
+    #
+    #     # Submit request:
+    #     submit_year_data = driver.find_element(By.NAME, "submit")
+    #     submit_year_data.click()
+    #
+    #     ## Now time to scrape the data:
+    #     all_data = []
+    #
+    #     data_length = len(driver.find_elements(By.XPATH, value=f"/html/body/table[2]/tbody/tr[9]/td/table/tbody/tr")) - 7
+    #
+    #     for num in range(3, data_length):
+    #         tr_data = driver.find_elements(By.XPATH, value=f"/html/body/table[2]/tbody/tr[9]/td/table/tbody/tr[{num}]/td")
+    #         td_data_list = [item.text for item in tr_data]
+    #         all_data.append(td_data_list)
+    #
+    #     headings = driver.find_elements(By.XPATH, value=f"/html/body/table[2]/tbody/tr[9]/td/table/tbody/tr[2]/td")
+    #     headings_list = [item.text.split(" ")[1] for item in headings]
+    #
+    #     ## Add data to workable dictionary:
+    #     for i in all_data:
+    #         data = {f"{all_data.index(i)}":{head:i[headings_list.index(head)] for head in headings_list} for i in all_data}
+    #
+    #     ## Formate date from MM/DD/YYYY to DD/MM/YYYY:
+    #     for item in range(0,len(all_data)):
+    #         date_strip = dt.strptime(data[f"{item}"]["Date"].split(" ")[0], "%m/%d/%Y")
+    #         formated_date = date_strip.strftime("%d/%m/%Y")
+    #         data[f"{item}"]["Date"] = formated_date
+
+
+        #EXEPTION CATCH - Keep getting a "data" not defined error:
+        # try:
+        #     formated_data = pd.DataFrame(data)
+        #     horizontal_form = formated_data.T
+        # except NameError:
+        #     print("A 'NameError' has occurred, trying again...")
+        #     formated_data = pd.DataFrame(data)
+        #     horizontal_form = formated_data.T
+
+
+
+#         curr_shop_num += 1
+#         data = {}
+#
+#     ## Log out of shop:
+#     log_out = driver.find_element(By.XPATH, value="/html/body/table[1]/tbody/tr[2]/td/a[6]")
+#     log_out.click()
+#     # sleep(10)
+#
+#     loops += 1
+# driver.quit()
+
+
+
+
+
+for i in range(1, 3):
+    print(i)
+
